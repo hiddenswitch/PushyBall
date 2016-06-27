@@ -1,0 +1,3 @@
+[submodule "Assets/Adaptive"]
+	path = Assets/Adaptive
+	url = https://github.com/hiddenswitch/Adaptive.git
