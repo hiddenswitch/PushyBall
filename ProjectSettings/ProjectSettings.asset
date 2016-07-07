@@ -336,7 +336,7 @@ PlayerSettings:
   psmSplashimage: {fileID: 0}
   spritePackerPolicy: 
   scriptingDefineSymbols:
-    1: SERVER
+    1: 
   metroPackageName: Pushy Ball
   metroPackageVersion: 
   metroCertificatePath: 

@@ -13,6 +13,7 @@ public class Multiplayer : MonoBehaviour, IAdaptiveDelegate<Multiplayer.GameStat
 		public float conservation = 0.9f;
 		public float impulseScale = 0.1f;
 		public uint frames = 0;
+		public GameInput[] lastPlayerInputs = new GameInput[2] { new GameInput (), new GameInput () };
 
 		public override object Clone ()
 		{
@@ -21,7 +22,8 @@ public class Multiplayer : MonoBehaviour, IAdaptiveDelegate<Multiplayer.GameStat
 				ballVelocity = this.ballVelocity,
 				conservation = this.conservation,
 				impulseScale = this.impulseScale,
-				frames = this.frames
+				frames = this.frames,
+				lastPlayerInputs = (GameInput[])this.lastPlayerInputs.Clone ()
 			};
 		}
 
@@ -36,6 +38,10 @@ public class Multiplayer : MonoBehaviour, IAdaptiveDelegate<Multiplayer.GameStat
 			conservation = readFrom.ReadSingle ();
 			impulseScale = readFrom.ReadSingle ();
 			frames = readFrom.ReadUInt32 ();
+			lastPlayerInputs [0] = new GameInput ();
+			lastPlayerInputs [0].Deserialize (readFrom);
+			lastPlayerInputs [1] = new GameInput ();
+			lastPlayerInputs [1].Deserialize (readFrom);
 		}
 
 		public override void Serialize (System.IO.BinaryWriter writeTo)
@@ -49,6 +55,8 @@ public class Multiplayer : MonoBehaviour, IAdaptiveDelegate<Multiplayer.GameStat
 			writeTo.Write (conservation);
 			writeTo.Write (impulseScale);
 			writeTo.Write (frames);
+			lastPlayerInputs [0].Serialize (writeTo);
+			lastPlayerInputs [1].Serialize (writeTo);
 		}
 
 		public GameState ()
@@ -59,65 +67,37 @@ public class Multiplayer : MonoBehaviour, IAdaptiveDelegate<Multiplayer.GameStat
 	[System.Serializable]
 	public class GameInput : HiddenSwitch.Multiplayer.Input
 	{
-		public float DeltaTime;
-
-		public Vector2[] DeltaPositions = new Vector2[0];
+		public float Time;
+		public bool MouseDown;
+		public Vector2 Position;
 
 
 		public override object Clone ()
 		{
-			return new GameInput (DeltaPositions, DeltaTime);
+			return new GameInput (Position, Time, MouseDown);
 		}
 
 		public override void Deserialize (System.IO.BinaryReader readFrom)
 		{
-			DeltaTime = readFrom.ReadSingle ();
-			var length = readFrom.ReadByte ();
-			if (length > 0) {
-				DeltaPositions = new Vector2[length];
-				for (var i = 0; i < length; i++) {
-					DeltaPositions [i] = new Vector2 (readFrom.ReadSingle (), readFrom.ReadSingle ());
-				}
-			}
+			Time = readFrom.ReadSingle ();
+			MouseDown = readFrom.ReadBoolean ();
+			Position.x = readFrom.ReadSingle ();
+			Position.y = readFrom.ReadSingle ();
 		}
 
 		public override bool Equals (object obj)
 		{
-			return false;
-//			var other = obj as GameInput;
-//			var positionsEqual = true;
-//
-//			// If there are no positions, return true. We don't have to transfer delta time.
-//			if (other.DeltaPositions.Length == 0
-//			    && DeltaPositions.Length == 0) {
-//				return true;
-//			}
-//
-//			for (var i = 0; i < DeltaPositions.Length; i++) {
-//				if (i < other.DeltaPositions.Length) {
-//					if (DeltaPositions [i] != other.DeltaPositions [i]) {
-//						positionsEqual = false;
-//						break;
-//					}
-//				} else {
-//					positionsEqual = false;
-//					break;
-//				}
-//			}
-//			return positionsEqual && (DeltaTime == other.DeltaTime);
+			var other = obj as GameInput;
+			return MouseDown == other.MouseDown
+			&& Position == other.Position;
 		}
 
 		public override void Serialize (System.IO.BinaryWriter writeTo)
 		{
-			writeTo.Write (DeltaTime);
-			writeTo.Write ((byte)DeltaPositions.Length);
-			if (DeltaPositions.Length > 0) {
-				for (var i = 0; i < DeltaPositions.Length; i++) {
-					var position = DeltaPositions [i];
-					writeTo.Write (position.x);
-					writeTo.Write (position.y);
-				}
-			}
+			writeTo.Write (Time);
+			writeTo.Write (MouseDown);
+			writeTo.Write (Position.x);
+			writeTo.Write (Position.y);
 		}
 
 		public override int GetHashCode (HiddenSwitch.Multiplayer.Input obj)
@@ -127,22 +107,18 @@ public class Multiplayer : MonoBehaviour, IAdaptiveDelegate<Multiplayer.GameStat
 
 		public override int GetHashCode ()
 		{
-			if (DeltaPositions.Length >= 1) {
-				return (DeltaPositions [0].GetHashCode () << 16) ^ (DeltaTime.GetHashCode ());
-			} else {
-				return 0;
-			}
+			return (Position.GetHashCode () << 16) ^ (Time.GetHashCode () << 1) ^ (MouseDown.GetHashCode ());
 		}
 
 		public GameInput ()
 		{
-			DeltaPositions = new Vector2[0];
 		}
 
-		public GameInput (Vector2[] deltaPositions, float deltaTime)
+		public GameInput (Vector2 position, float time, bool mouseDown)
 		{
-			DeltaPositions = deltaPositions ?? new Vector2[0];
-			DeltaTime = deltaTime;
+			Position = position;
+			Time = time;
+			MouseDown = mouseDown;
 		}
 	}
 
@@ -150,8 +126,6 @@ public class Multiplayer : MonoBehaviour, IAdaptiveDelegate<Multiplayer.GameStat
 
 	#region IAdaptiveDelegate implementation
 
-	public float lastInputTime;
-	public Vector2[] lastPositions;
 	public GameObject ball;
 
 	public GameInput runtimeInput;
@@ -164,36 +138,7 @@ public class Multiplayer : MonoBehaviour, IAdaptiveDelegate<Multiplayer.GameStat
 
 	public GameInput GetCurrentInput ()
 	{
-		Vector2[] positions;
-		if (UnityEngine.Input.mousePresent) {
-			if (UnityEngine.Input.GetMouseButton (0)) {
-				positions = new Vector2[] { UnityEngine.Input.mousePosition };
-			} else {
-				positions = new Vector2[0];
-			}
-		} else {
-			positions = UnityEngine.Input.touches.Select (t => t.position).ToArray ();
-		}
-
-		var deltaPositions = new Vector2[positions.Length];
-		for (var i = 0; i < deltaPositions.Length; i++) {
-			if (i < lastPositions.Length) {
-				deltaPositions [i] = positions [i] - lastPositions [i];
-			} else {
-				deltaPositions [i] = Vector2.zero;
-			}
-		}
-
-		var deltaTime = Time.time - lastInputTime;
-
-		// Update last values
-		lastPositions = new Vector2[positions.Length];
-		for (var i = 0; i < positions.Length; i++) {
-			lastPositions [i] = positions [i];
-		}
-		lastInputTime = Time.time;
-
-		return new GameInput (deltaPositions, deltaTime);
+		return new GameInput ((Vector2)UnityEngine.Input.mousePosition, Time.time, UnityEngine.Input.GetMouseButton (0));
 	}
 
 	public GameState GetStartState ()
@@ -203,10 +148,22 @@ public class Multiplayer : MonoBehaviour, IAdaptiveDelegate<Multiplayer.GameStat
 
 	#endregion
 
+	public System.IO.FileStream file;
+	public System.IO.TextWriter writer;
+
 	void Awake ()
 	{
 		Application.targetFrameRate = -1;
 		DontDestroyOnLoad (this.gameObject);
+		var log = "client.tsv";
+		#if SERVER
+		log = "server.tsv";
+		#endif
+		if (System.IO.File.Exists (log)) {
+			System.IO.File.Delete (log);
+		}
+		file = System.IO.File.OpenWrite (log);
+		writer = new System.IO.StreamWriter (file);
 	}
 
 	// Use this for initialization
@@ -230,15 +187,37 @@ public class Multiplayer : MonoBehaviour, IAdaptiveDelegate<Multiplayer.GameStat
 			return;
 		}
 		mutableState.ballVelocity = Vector3.zero;
-		foreach (var kv in inputs) {
-			var hasInput = kv.Value.DeltaPositions.Length > 0;
-			if (hasInput) {
-				var impulse = kv.Value.DeltaPositions [0].normalized;
-				mutableState.ballVelocity += new Vector3 (impulse.x, impulse.y, 0);
+		// The player with the lower player ID is lastPlayerInputs[0]
+		var lowId = inputs.Min (t => t.Key);
+		foreach (var kv in inputs.OrderBy(t => t.Key)) {
+			var input = kv.Value;
+			var index = kv.Key == lowId ? 0 : 1;
+			var previousInput = mutableState.lastPlayerInputs [index];
+			if (input.MouseDown && previousInput.MouseDown) {
+				// Move
+				var diff = (input.Position - previousInput.Position).normalized;
+				mutableState.ballVelocity += new Vector3 (diff.x, diff.y, 0);
 			}
+			// update last position
+			mutableState.lastPlayerInputs [index] = (GameInput)input.Clone ();
 		}
 		mutableState.ballPosition += mutableState.ballVelocity;
 		mutableState.frames++;
+		writer.WriteLine (string.Format ("{0}\t{1}\t{2}\t{3}\t{4}\tID {5}\t{6}\t{7}\t{8}\tID {9}\t{10}\t{11}\t{12}", 
+			mutableState.frames,
+			mutableState.ballPosition.x,
+			mutableState.ballPosition.y, 
+			mutableState.ballVelocity.x,
+			mutableState.ballVelocity.y,
+			inputs [0].Key,
+			inputs [0].Value.Position.x,
+			inputs [0].Value.Position.y,
+			inputs [0].Value.MouseDown,
+			inputs [1].Key,
+			inputs [1].Value.Position.x,
+			inputs [1].Value.Position.y,
+			inputs [1].Value.MouseDown
+		));
 		runtimeGameState = (GameState)mutableState.Clone ();
 	}
 
@@ -247,6 +226,16 @@ public class Multiplayer : MonoBehaviour, IAdaptiveDelegate<Multiplayer.GameStat
 		// Render the latest state. Called after the network read because this is a lateupdate
 		if (Adaptive.Simulation.LatestState != null) {
 			ball.transform.position = Adaptive.Simulation.LatestState.ballPosition;
+		}
+
+		runtimeInput = GetCurrentInput ();
+	}
+
+
+	void OnGUI ()
+	{
+		if (Adaptive.Simulation != null) {
+			GUI.Label (new Rect (20, 20, 100, 40), Adaptive.Simulation.ElapsedFrameCount.ToString ());
 		}
 	}
 }
